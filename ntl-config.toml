@@ -1,0 +1,13 @@
+profile = "dist"
+change-id = 134650
+
+[build]
+target = ["riscv32imac-unknown-linux-gnu"]
+
+[rust]
+channel = "stable"
+description = "Rust for NTL HiveS SoC"
+
+[target.riscv32imac-unknown-linux-gnu]
+cc = "riscv32-unknown-linux-gnu-gcc"
+ar = "riscv32-unknown-linux-gnu-ar"
