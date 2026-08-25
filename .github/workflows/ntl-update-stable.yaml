@@ -1,0 +1,92 @@
+name: ntl-update-stable
+
+on:
+  schedule:
+    - cron: '43 4 * * *'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Rust version (default latest stable)
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency: ntl-update-stable
+
+jobs:
+  update:
+    if: github.repository == 'NetTimeLogic-OpenSource/rust'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Determine target version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          VERSION=${INPUT_VERSION:-$(gh api repos/rust-lang/rust/releases/latest --jq .tag_name)}
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Target version: $VERSION"
+
+      - name: Check whether branch already exists
+        id: branch
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if git ls-remote --exit-code https://github.com/${{ github.repository }}.git "refs/heads/rust-ntl-$VERSION" > /dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "rust-ntl-$VERSION already exists, nothing to do."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create branch from upstream tag
+        if: steps.branch.outputs.exists == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          # PAT with contents + workflows write access; the default GITHUB_TOKEN
+          # cannot push branches that touch .github/workflows files
+          TOKEN: ${{ secrets.NTL_PUSH_TOKEN }}
+        run: |
+          git init rust
+          cd rust
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/rust-lang/rust.git
+          git remote add origin "https://x-access-token:$TOKEN@github.com/${{ github.repository }}.git"
+
+          SOURCE_BRANCH=$(git ls-remote origin 'refs/heads/rust-ntl-*' | sed 's|.*refs/heads/||' | sort -V | tail -1)
+          SOURCE_VERSION=${SOURCE_BRANCH#rust-ntl-}
+          echo "Cherry-picking the NTL commits from $SOURCE_BRANCH (base $SOURCE_VERSION) onto $VERSION"
+
+          git fetch --depth 1 upstream "refs/tags/$VERSION:refs/tags/$VERSION"
+          git fetch --depth 1 upstream "refs/tags/$SOURCE_VERSION:refs/tags/$SOURCE_VERSION"
+          git fetch --depth 50 origin "refs/heads/$SOURCE_BRANCH:refs/heads/$SOURCE_BRANCH"
+
+          git checkout -b "rust-ntl-$VERSION" "$VERSION"
+          git cherry-pick $(git rev-list --reverse "$SOURCE_VERSION..$SOURCE_BRANCH") || {
+            echo "::error::Cherry-pick onto $VERSION failed - the target spec needs a manual rebase (likely rustc_target API drift)."
+            exit 1
+          }
+
+      - name: Check rustc_target compiles
+        if: steps.branch.outputs.exists == 'false'
+        working-directory: rust
+        run: |
+          printf 'profile = "compiler"\nchange-id = 99999999\n\n[llvm]\ndownload-ci-llvm = true\n' > bootstrap.toml
+          ./x check compiler/rustc_target || {
+            echo "::error::rustc_target no longer compiles against ${{ steps.version.outputs.version }} - the target spec needs a manual fix (compare with a neighbouring riscv target file)."
+            exit 1
+          }
+
+      - name: Push branch
+        if: steps.branch.outputs.exists == 'false'
+        working-directory: rust
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git push origin "rust-ntl-$VERSION"
+          echo "Pushed rust-ntl-$VERSION. Bump RUST_VERSION in riscv-rust to $VERSION to build the image." >> "$GITHUB_STEP_SUMMARY"
