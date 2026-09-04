@@ -76,7 +76,9 @@ jobs:
         if: steps.branch.outputs.exists == 'false'
         working-directory: rust
         run: |
-          printf 'profile = "compiler"\nchange-id = 99999999\n\n[llvm]\ndownload-ci-llvm = true\n' > bootstrap.toml
+          # download-ci-llvm is off: no CI LLVM artifact exists for stable tag commits, and
+          # `x check` skips building LLVM anyway (only cmake must be present for the sanity check).
+          printf 'profile = "compiler"\nchange-id = 99999999\n\n[llvm]\ndownload-ci-llvm = false\n' > bootstrap.toml
           ./x check compiler/rustc_target || {
             echo "::error::rustc_target no longer compiles against ${{ steps.version.outputs.version }} - the target spec needs a manual fix (compare with a neighbouring riscv target file)."
             exit 1
